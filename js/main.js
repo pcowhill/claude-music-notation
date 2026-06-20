@@ -42,6 +42,13 @@ function toast(msg) {
   clearTimeout(t._timer);
   t._timer = setTimeout(() => { t.classList.add('fade'); setTimeout(() => hide(t), 320); }, 1700);
 }
+// Mild, auto-clearing message for soft-blocked actions (e.g. a full bar). Shows
+// briefly in the status bar and as a toast, then the next render restores status.
+function notice(msg) {
+  const el = $('#status-pos');
+  if (el) el.textContent = msg;
+  toast(msg);
+}
 
 // ---- Duration icons (inline SVG so they print/scale crisply) --------------
 function noteIcon(code) {
@@ -261,7 +268,7 @@ function updateSidePanel() {
   setValIfBlur($('#f-time-num'), ts.num);
   setValIfBlur($('#f-time-den'), ts.den);
 
-  $('#staff-count').textContent = `${sc.staves.length} staff${sc.staves.length > 1 ? 'es' : ''}`;
+  $('#staff-count').textContent = `${sc.staves.length} ${sc.staves.length === 1 ? 'staff' : 'staves'}`;
   $('#measure-count').textContent = `${sc.staves[0].measures.length} bars`;
   updateStaffList();
 
@@ -433,6 +440,20 @@ function wireSidePanel() {
   $('#btn-add-measure').addEventListener('click', () => editor.addMeasure());
   $('#btn-del-measure').addEventListener('click', () => editor.removeMeasure());
 
+  // Append N measures at once (Enter in the field or click the button).
+  const addN = () => {
+    const n = parseInt($('#f-add-count').value, 10);
+    if (Number.isFinite(n) && n > 0) {
+      editor.addMeasures(n);
+      toast(`Added ${n} measure${n > 1 ? 's' : ''}`);
+    }
+    scoreEl.focus();
+  };
+  $('#btn-add-measures').addEventListener('click', addN);
+  $('#f-add-count').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addN(); }
+  });
+
   // Tier-2 controls
   $('#f-notehead').addEventListener('change', (e) => editor.setNotehead(e.target.value));
   $('#f-lyric').addEventListener('input', (e) => editor.setLyric(e.target.value));
@@ -563,7 +584,7 @@ async function init() {
     try { await saveProject(score); } catch (e) { console.warn('Initial save failed:', e); }
   }
 
-  editor = new Editor(score, onChange);
+  editor = new Editor(score, onChange, notice);
   setLastOpened(score.id);
 
   buildPalettes();

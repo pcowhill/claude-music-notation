@@ -75,25 +75,43 @@ pitch   = { letter:'A'..'G', octave, acc:'' | '#' | 'b' | 'n' | '##' | 'bb' | '+
   duration/tie/delete act on, highlighted blue) is the note immediately LEFT of
   the bar. See `editor.targetNoteIndex()`.
 - **Empty measures** render a single whole rest (`render.js` `buildMeasure`).
+  **Partially filled bars** show DISPLAY-ONLY trailing rests (not stored in the
+  model): `buildMeasure` appends filler StaveNotes after the real notes
+  (`fillerRests`, greedy largest-first, beat-aware), and `realCount` marks how
+  many leading staveNotes are real so the cursor/`hitTest` stay on real content.
+  (When every staff's measure in a column is empty, those voices are formatted
+  independently — VexFlow drops all but one when multiple lone centered whole
+  rests share a tick context.)
 - **Accidentals are explicit**: the renderer draws exactly the `acc` on each
-  pitch; the key signature is currently **display-only** (it does not alter
-  un-marked notes, and audio plays the literal pitch). 
+  pitch; the key signature is **display-only on the page** (it does not alter
+  un-marked notes). **Audio sounds the real pitch**, though: the entry "ping"
+  applies the effective key signature plus within-bar accidental carry via
+  `model.soundingPitches()` (precedence: explicit acc on the note → most recent
+  explicit acc on the same letter+octave earlier in the bar → key-signature
+  alteration → natural). See `editor._playEntered`.
+- **Measure capacity**: `editor.insertPitch`/`insertRest` block an entry that
+  would push the bar's real content past its time-signature capacity (mild
+  `onNotice` message, e.g. "No room in Staff 2, Bar 5"). When an entry fills a
+  bar exactly, the cursor auto-advances to the next bar (`_advanceIfFull`),
+  appending a fresh bar to every staff if it was the last (same undo step).
+  Pre-existing over-full bars still render — only new entries are blocked.
 - **Ties** are drawn only within a single system (`tieChains` in `drawSystem`).
 - Geometry for click→pitch and the cursor is captured during render into
   `layout.staveBoxes`; `render.hitTest(layout, pageIndex, x, y)` maps SVG coords
   to `{staffIndex, measureIndex, slot, pitch, nearestNoteIndex}`.
-- **Layout**: `render.js` packs a fixed number of measures per system with
-  (mostly) equal widths. The page coordinate system IS points (612×792 = US
-  Letter), reused 1:1 for the PDF.
+- **Layout**: `render.js` sizes each measure by its content's minimum width
+  (`measureContentWidth` → VexFlow `preCalculateMinTotalWidth`; measured without
+  `auto_stem`, which under-reports), packs measures into systems greedily by
+  available width, then justifies each system to fill the page width (wider bars
+  get proportionally more space). The page coordinate system IS points
+  (612×792 = US Letter), reused 1:1 for the PDF.
 
 ### Known limitations (candidate improvements)
 
-- Dense measures don't widen: notes can overflow past the barline (layout uses
-  fixed measure widths rather than content-driven minimum widths).
-- No measure-capacity logic: you can over/under-fill a bar; trailing rests
-  aren't auto-filled; the cursor doesn't auto-advance when a bar fills.
-- Audio ignores the key signature (plays the literal written pitch).
-- Side-panel staff count text pluralizes as "staffes".
+- Ties still only render within a single system (no cross-system / cross-page
+  tie continuation).
+- The page key signature remains display-only — it does not auto-apply
+  accidentals to the drawn noteheads (audio does sound them; see above).
 
 ## Verifying changes (headless Chromium)
 

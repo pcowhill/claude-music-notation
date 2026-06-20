@@ -15,6 +15,7 @@ const MN = (window.MN = window.MN || {});
 const {
   createNote, createRest, createMeasure, createStaff, cloneScore,
   defaultPitchForClef, nearestPitchWithLetter, transposeDiatonic, sortPitches,
+  durationBeats, measureCapacityBeats, effectiveTimeSignature, soundingPitches,
 } = MN.model;
 const { getInstrument } = MN.instruments;
 const { playChord, resumeAudio } = MN.audio;
@@ -23,9 +24,11 @@ const HISTORY_LIMIT = 250;
 const COALESCE_MS = 1200;
 
 class Editor {
-  constructor(score, onChange) {
+  constructor(score, onChange, onNotice) {
     this.score = score;
     this.onChange = onChange || (() => {});
+    // Mild, non-blocking message hook (e.g. "No room in Staff 2, Bar 5").
+    this.onNotice = onNotice || (() => {});
     this.undoStack = [];
     this.redoStack = [];
     this.cursor = { staffIndex: 0, measureIndex: 0, noteIndex: 0 };
@@ -136,12 +139,49 @@ class Editor {
     this._emit();
   }
 
+  // ---- Capacity / auto-advance / audio helpers ----------------------------
+
+  // Real (model) content of a measure, in quarter-note beats.
+  _measureUsedBeats(measure) {
+    return measure.notes.reduce((sum, n) => sum + durationBeats(n.duration, n.dots), 0);
+  }
+  // Would adding `addBeats` keep the bar within its time-signature capacity?
+  _fits(measure, ts, addBeats) {
+    return this._measureUsedBeats(measure) + addBeats <= measureCapacityBeats(ts) + 1e-6;
+  }
+  _noRoom() {
+    this.onNotice(`No room in Staff ${this.cursor.staffIndex + 1}, Bar ${this.cursor.measureIndex + 1}`);
+  }
+  // Play the SOUNDING pitch(es) of a note (apply key signature + within-bar
+  // accidental carry). `measureIndex`/`noteIndex` locate the note in the score.
+  _playEntered(pitches, measureIndex, noteIndex) {
+    if (!pitches.length) return;
+    playChord(soundingPitches(this.curStaff(), measureIndex, noteIndex, pitches));
+  }
+  // If the cursor's measure is now exactly full, advance to the next bar's start;
+  // when at the end of the piece, append a fresh bar to every staff first. Runs
+  // inside a commit so the auto-added bar is part of the same undo step.
+  _advanceIfFull() {
+    const ts = effectiveTimeSignature(this.score, this.cursor.measureIndex);
+    if (this._measureUsedBeats(this.curMeasure()) < measureCapacityBeats(ts) - 1e-6) return;
+    if (this.cursor.measureIndex >= this.curStaff().measures.length - 1) {
+      this.score.staves.forEach((s) => s.measures.push(createMeasure()));
+    }
+    this.cursor.measureIndex++;
+    this.cursor.noteIndex = 0;
+  }
+
   // ---- Note entry ---------------------------------------------------------
 
   // Insert a pitched note (or a rest if rest-mode is on) at the cursor.
   insertPitch(pitch) {
     resumeAudio();
     const makeRest = this.input.isRest;
+    const ts = effectiveTimeSignature(this.score, this.cursor.measureIndex);
+    const addBeats = durationBeats(this.input.duration, this.input.dots);
+    if (!this._fits(this.curMeasure(), ts, addBeats)) { this._noRoom(); return; }
+    const playMeasure = this.cursor.measureIndex;
+    let playNoteIndex = this.cursor.noteIndex;
     this.commit(() => {
       const note = makeRest
         ? createRest(this.input.duration, this.input.dots)
@@ -150,11 +190,13 @@ class Editor {
             dots: this.input.dots, tie: this.input.tieNext,
           });
       this.curMeasure().notes.splice(this.cursor.noteIndex, 0, note);
+      playNoteIndex = this.cursor.noteIndex;
       this.cursor.noteIndex++;
       this.input.tieNext = false;
       if (!makeRest) this.lastPitch = { ...pitch };
+      this._advanceIfFull();
     });
-    if (!makeRest) playChord([pitch]);
+    if (!makeRest) this._playEntered([pitch], playMeasure, playNoteIndex);
   }
 
   // A–G keyboard entry: pressing a letter always enters a pitch (clears rest mode).
@@ -167,11 +209,15 @@ class Editor {
   // Explicitly enter a rest of the current duration regardless of rest toggle.
   insertRest() {
     resumeAudio();
+    const ts = effectiveTimeSignature(this.score, this.cursor.measureIndex);
+    const addBeats = durationBeats(this.input.duration, this.input.dots);
+    if (!this._fits(this.curMeasure(), ts, addBeats)) { this._noRoom(); return; }
     this.commit(() => {
       this.curMeasure().notes.splice(this.cursor.noteIndex, 0,
         createRest(this.input.duration, this.input.dots));
       this.cursor.noteIndex++;
       this.input.tieNext = false;
+      this._advanceIfFull();
     });
   }
 
@@ -209,14 +255,14 @@ class Editor {
     const note = this.curMeasure().notes[idx];
     if (note.pitches.length === 0) {
       this.commit(() => { note.pitches = [{ ...pitch }]; });
-      playChord([pitch]);
+      this._playEntered([pitch], this.cursor.measureIndex, idx);
       this.lastPitch = { ...pitch };
       return;
     }
     if (note.pitches.some((p) => p.letter === pitch.letter && p.octave === pitch.octave)) return;
     this.commit(() => { note.pitches.push({ ...pitch }); });
     this.lastPitch = { ...pitch };
-    playChord(note.pitches);
+    this._playEntered(note.pitches, this.cursor.measureIndex, idx);
   }
 
   addChordLetter(letter) {
@@ -237,7 +283,7 @@ class Editor {
       note.pitches = sortPitches(note.pitches.map((p) => transposeDiatonic(p, delta)));
     });
     this.lastPitch = { ...note.pitches[note.pitches.length - 1] };
-    playChord(note.pitches);
+    this._playEntered(note.pitches, this.cursor.measureIndex, idx);
   }
 
   _cursorReferencePitch() {
@@ -277,7 +323,7 @@ class Editor {
       if (!this.input.isRest && note.pitches.length === 0) {
         const p = this.lastPitch || this._cursorReferencePitch();
         this.commit(() => { note.pitches = [{ ...p }]; });
-        playChord([p]);
+        this._playEntered([p], this.cursor.measureIndex, idx);
         return;
       }
     }
@@ -293,7 +339,7 @@ class Editor {
     if (note.pitches.length === 0) { this._emit(); return; }
     const allSame = note.pitches.every((p) => p.acc === acc);
     this.commit(() => { note.pitches.forEach((p) => { p.acc = allSame ? '' : acc; }); });
-    playChord(note.pitches);
+    this._playEntered(note.pitches, this.cursor.measureIndex, idx);
   }
 
   // Tie: toggle on the target note if it has a predecessor to tie back to;
@@ -411,6 +457,14 @@ class Editor {
   }
   addMeasure() {
     this.commit(() => { this.score.staves.forEach((s) => s.measures.push(createMeasure())); });
+  }
+  // Append `n` empty measures to every staff in a single undo step.
+  addMeasures(n) {
+    const count = Math.max(0, Math.floor(n));
+    if (!count) return;
+    this.commit(() => {
+      for (let i = 0; i < count; i++) this.score.staves.forEach((s) => s.measures.push(createMeasure()));
+    });
   }
   removeMeasure() {
     if (!this.score.staves[0] || this.score.staves[0].measures.length <= 1) return;
