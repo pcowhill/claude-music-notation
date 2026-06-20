@@ -47,8 +47,8 @@ mutate the model from render.
 | File | Responsibility |
 |---|---|
 | `js/instruments.js` | Instrument presets (name + default clef). `MN.instruments` |
-| `js/model.js` | Serializable score model + pure pitch/duration math + (de)serialize. `MN.model` |
-| `js/audio.js` | Web Audio note/chord "ping" on entry. `MN.audio` |
+| `js/model.js` | Serializable score model + pure pitch/duration math + (de)serialize + playback-timeline builder (`buildPlayback`). `MN.model` |
+| `js/audio.js` | Web Audio: entry "ping" + scheduled whole-score playback driving a moving playhead. `MN.audio` |
 | `js/storage.js` | IndexedDB project save/load/list/delete (idb-keyval). `MN.storage` |
 | `js/render.js` | VexFlow rendering, layout/pagination, geometry capture + `hitTest`. `MN.render` |
 | `js/editor.js` | `MN.Editor` class: cursor, note entry, palette state, undo/redo |
@@ -96,6 +96,34 @@ pitch   = { letter:'A'..'G', octave, acc:'' | '#' | 'b' | 'n' | '##' | 'bb' | '+
   appending a fresh bar to every staff if it was the last (same undo step).
   Pre-existing over-full bars still render — only new entries are blocked.
 - **Ties** are drawn only within a single system (`tieChains` in `drawSystem`).
+- **Playback** (the toolbar ▶ Play / ■ Stop button, `Space`, and `Ctrl/Cmd`-click
+  for "from cursor"): `model.buildPlayback(score, startBeat)` is a **pure**
+  function that flattens the score into `{ audioNotes:[{atSec,durSec,freqs}],
+  steps:[{atSec,marks}], endSec }`. Measure start times come from each bar's
+  time-signature **capacity** (so all staves stay aligned at barlines), a quarter
+  lasts `60/tempo`s, audio uses `soundingPitches` (real pitch), rests advance time
+  silently, and ties **sustain** (extend the previous onset instead of
+  re-articulating, when the pitch set matches). `audio.startPlayback(plan, {onStep,
+  onEnd})` schedules every onset on the Web Audio clock and runs a `requestAnimation
+  Frame` loop against that same clock: `onStep(marks)` fires at each moment with the
+  notes then sounding, `onEnd` once at the natural end. The **moving playhead** is a
+  transient `editorState.playing` array (`{staffIndex,measureIndex,noteIndex}`) that
+  `render.js` colours green (`PLAY_ACCENT`, distinct from the blue edit `ACCENT`).
+  It is **never** routed through `commit` — `main.js` keeps it in `playingMarks` and
+  re-renders via a lightweight `renderScoreOnly()` (no side-panel rebuild, **no
+  autosave churn**). Any editor mutation/navigation (`onChange`) stops playback;
+  so do the Stop button, `Space`, and the end of the score. Dynamics do **not** yet
+  affect playback volume (deliberately skipped).
+- **Measure navigation**: `Shift`+`←`/`→` jump by whole bar
+  (`editor.moveMeasureRight` / `moveMeasureLeft`, MuseScore semantics: Shift+Left
+  snaps to the current bar's start, then to the previous bar's). Like the plain
+  arrows these are **pure navigation** — they sync palette/last-pitch via
+  `_afterNav()` and do **not** create undo history.
+- **Removing measures**: `editor.removeMeasure()` drops the **last** bar
+  ("– Remove last measure"); `editor.removeMeasureAt(index)` drops a specific bar
+  (the cursor's, via "– Remove current measure") from **every** staff so they stay
+  equal length. Both are undoable (`commit`) and never let the score fall below one
+  measure.
 - Geometry for click→pitch and the cursor is captured during render into
   `layout.staveBoxes`; `render.hitTest(layout, pageIndex, x, y)` maps SVG coords
   to `{staffIndex, measureIndex, slot, pitch, nearestNoteIndex}`.
@@ -127,8 +155,12 @@ A browser is the only real test. Playwright + Chromium are installed.
 - Test against `file:///home/user/claude-music-notation/index.html` to exercise
   the real "double-click" path (not just http).
 - There's a debug hook: `window.MusicApp = { editor, layout, render(),
-  exportDataUri() }`. Drive the app through it and assert on
-  `window.MusicApp.editor.score`.
+  exportDataUri(), isPlaying, playing, play(fromCursor), stop() }`. Drive the app
+  through it and assert on `window.MusicApp.editor.score`.
+- Regression suites live in `test/`: `verify.mjs` + `verify2.mjs` (entry/capacity/
+  layout/save/PDF) and `verify3.mjs` (playback plan + start/advance/stop lifecycle,
+  Shift+arrow measure nav, remove-current-measure across staves + undo). Run each
+  with `node test/verifyN.mjs`.
 
 Minimal harness:
 

@@ -394,6 +394,93 @@ function sortPitches(pitches) {
   return [...pitches].sort((a, b) => pitchToMidi(a) - pitchToMidi(b));
 }
 
+// ---- Whole-score playback timeline ----------------------------------------
+// Pure helpers that flatten the score into a tempo-resolved plan the audio
+// scheduler can play and the renderer can use to drive a moving playhead.
+// Measure start times come from each bar's time-signature capacity (not how
+// full it is), so every staff stays aligned at the barlines even when a bar is
+// under/over-filled. A quarter note lasts 60/tempo seconds.
+
+// Absolute beat where each measure begins, plus the score's total length.
+function measureStartBeats(score) {
+  const total = score.staves[0] ? score.staves[0].measures.length : 0;
+  const starts = [];
+  let acc = 0;
+  for (let m = 0; m < total; m++) {
+    starts.push(acc);
+    acc += measureCapacityBeats(effectiveTimeSignature(score, m));
+  }
+  return { starts, totalBeats: acc };
+}
+
+// Absolute beat position of the cursor (used for "play from cursor").
+function cursorStartBeat(score, cursor) {
+  const { starts } = measureStartBeats(score);
+  let beat = starts[cursor.measureIndex] || 0;
+  const staff = score.staves[cursor.staffIndex] || score.staves[0];
+  const measure = staff && staff.measures[cursor.measureIndex];
+  if (measure) {
+    for (let i = 0; i < cursor.noteIndex && i < measure.notes.length; i++) {
+      beat += durationBeats(measure.notes[i].duration, measure.notes[i].dots);
+    }
+  }
+  return beat;
+}
+
+// Build a playback plan (optionally starting partway through at `startBeat`):
+//   audioNotes : [{ atSec, durSec, freqs[] }]  onsets to sound (rests omitted)
+//   steps      : [{ atSec, marks[] }]          playhead moments incl. rests,
+//                  marks = { staffIndex, measureIndex, noteIndex }
+//   endSec     : when playback finishes (end of the last bar)
+// Audio sounds the REAL pitch via soundingPitches (key signature + within-bar
+// accidental carry), exactly like the entry "ping". Ties are honored by
+// sustaining: a tied note extends the previous onset instead of re-articulating
+// (only when it is the same pitch set; otherwise it re-articulates).
+function buildPlayback(score, startBeat = 0) {
+  const secPerBeat = 60 / (score.tempo || 120);
+  const { starts, totalBeats } = measureStartBeats(score);
+  const audioNotes = [];
+  const stepMap = new Map(); // rel-beat (ms key) -> { atSec, marks[] }
+
+  score.staves.forEach((staff, staffIndex) => {
+    let prevAudio = null; // last articulated onset in this staff (for tie sustain)
+    staff.measures.forEach((measure, measureIndex) => {
+      let beatPos = measureIndex < starts.length ? starts[measureIndex] : totalBeats;
+      measure.notes.forEach((note, noteIndex) => {
+        const beats = durationBeats(note.duration, note.dots);
+        if (beatPos >= startBeat - 1e-9) {
+          const rel = beatPos - startBeat;
+          const key = Math.round(rel * 1000);
+          let step = stepMap.get(key);
+          if (!step) { step = { atSec: rel * secPerBeat, marks: [] }; stepMap.set(key, step); }
+          step.marks.push({ staffIndex, measureIndex, noteIndex });
+          if (note.pitches.length) {
+            const freqs = soundingPitches(staff, measureIndex, noteIndex, note.pitches)
+              .map(pitchToFrequency);
+            const fk = freqs.join(',');
+            if (note.tie && prevAudio && prevAudio.fk === fk) {
+              prevAudio.durSec += beats * secPerBeat; // sustain the tie
+            } else {
+              prevAudio = { atSec: rel * secPerBeat, durSec: beats * secPerBeat, freqs, fk };
+              audioNotes.push(prevAudio);
+            }
+          } else {
+            prevAudio = null; // a rest breaks the tie chain
+          }
+        } else {
+          prevAudio = null; // onset before the start point: not played
+        }
+        beatPos += beats;
+      });
+    });
+  });
+
+  const steps = [...stepMap.values()].sort((a, b) => a.atSec - b.atSec);
+  audioNotes.forEach((ev) => { delete ev.fk; }); // internal key, not part of the API
+  const endSec = Math.max(0, totalBeats - startBeat) * secPerBeat;
+  return { audioNotes, steps, endSec };
+}
+
 MN.model = {
   SCHEMA_VERSION, DURATIONS, ACCIDENTALS_BASIC, ACCIDENTALS_MICRO, DYNAMICS,
   NOTEHEADS, KEY_SIGNATURES, TIME_NUMERATORS, TIME_DENOMINATORS,
@@ -405,5 +492,6 @@ MN.model = {
   pitchToDiatonic, diatonicToPitch, pitchToMidi, pitchToFrequency, transposeDiatonic,
   pitchToVexKey, pitchToLabel, topLineDiatonic, defaultPitchForClef,
   nearestPitchWithLetter, sortPitches,
+  measureStartBeats, cursorStartBeat, buildPlayback,
 };
 })();

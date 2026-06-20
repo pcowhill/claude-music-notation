@@ -44,6 +44,7 @@
     <div class="tb-spacer"></div>
 
     <div class="tb-group">
+      <button id="btn-play" class="tb-btn" title="Play from start  ·  Ctrl/Cmd-click: play from cursor  ·  Space: play/stop">▶ Play</button>
       <button id="btn-export" class="tb-btn" title="Export vector PDF">Export PDF</button>
       <button id="btn-help" class="tb-btn icon" title="Keyboard help (?)">?</button>
     </div>
@@ -87,7 +88,10 @@
         </div>
         <div class="row">
           <button id="btn-add-measure" class="btn-sm">+ Add measure</button>
-          <button id="btn-del-measure" class="btn-sm">– Remove measure</button>
+          <button id="btn-del-measure" class="btn-sm" title="Remove the last measure of the score">– Remove last measure</button>
+        </div>
+        <div class="row">
+          <button id="btn-del-current" class="btn-sm" title="Remove the measure the cursor is in (from every staff)">– Remove current measure</button>
         </div>
         <div class="row">
           <input id="f-add-count" type="number" min="1" step="1" value="8"
@@ -159,7 +163,10 @@
         <div><kbd>↑</kbd> <kbd>↓</kbd></div><div>Move selected note pitch by a step</div>
         <div><kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd></div><div>Move pitch by an octave</div>
         <div><kbd>←</kbd> <kbd>→</kbd></div><div>Move the insertion cursor</div>
+        <div><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd></div><div>Jump to start of previous / next measure</div>
         <div><kbd>Tab</kbd></div><div>Next staff</div>
+        <div><kbd>Space</kbd></div><div>Play / stop the whole score</div>
+        <div>▶ Play <span class="muted">(or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>-click)</span></div><div>Play from start; modifier-click plays from the cursor</div>
         <div><kbd>Shift</kbd>+click / <kbd>Shift</kbd>+<kbd>A</kbd>–<kbd>G</kbd></div><div>Add a chord tone to the selected note</div>
         <div>click staff</div><div>Set pitch / select a note</div>
         <div><kbd>[</kbd> <kbd>]</kbd> <kbd>\</kbd></div><div>Flat, sharp, natural (selected note)</div>

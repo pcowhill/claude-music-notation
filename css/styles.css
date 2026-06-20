@@ -75,6 +75,12 @@ body {
   border-color: var(--accent);
   color: #fff;
 }
+/* While playing, the Play button becomes a red Stop button. */
+#btn-play.active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
 .palette-btn {
   height: 32px; min-width: 34px; padding: 0 6px;
   border: 1px solid var(--line); background: #fff; color: var(--ink);

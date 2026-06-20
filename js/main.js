@@ -9,13 +9,13 @@ const MN = window.MN;
 const {
   createScore, DURATIONS, ACCIDENTALS_BASIC, DYNAMICS, NOTEHEADS, KEY_SIGNATURES,
   TIME_NUMERATORS, TIME_DENOMINATORS, effectiveTimeSignature, effectiveKeySignature,
-  durationBeats, measureCapacityBeats, pitchToLabel,
+  durationBeats, measureCapacityBeats, pitchToLabel, buildPlayback, cursorStartBeat,
 } = MN.model;
 const { INSTRUMENTS } = MN.instruments;
 const Editor = MN.Editor;
 const { renderScore, hitTest } = MN.render;
 const { exportPDF, buildPDF } = MN.pdf;
-const { resumeAudio } = MN.audio;
+const { resumeAudio, startPlayback, stopPlayback } = MN.audio;
 const {
   listProjects, loadProject, saveProject, deleteProject, renameProject,
   duplicateProject, setLastOpened, getLastOpened,
@@ -28,6 +28,11 @@ let editor = null;
 let layout = null;
 let lastStaffCount = -1;
 let saveTimer = null;
+// Playback state. `playbackActive` toggles the Play/Stop button; `playingMarks`
+// is the transient "playing" highlight passed into the render editorState (never
+// committed — no undo entries, no autosave churn).
+let playbackActive = false;
+let playingMarks = null;
 
 // ---- Small DOM helpers -----------------------------------------------------
 function setValIfBlur(el, val) {
@@ -216,16 +221,77 @@ function updateStaffList() {
 }
 
 // ---- Render + UI sync ------------------------------------------------------
+// onChange runs after every editor mutation/navigation. Any such change ends
+// playback (the user is editing or navigating), then re-renders the full UI.
 function onChange() {
+  if (playbackActive) resetPlaybackState(); // render() below clears the highlight
   render();
 }
 
+// Editor state + the transient playback highlight (not part of the model).
+function editorStateForRender() {
+  const es = editor.editorState();
+  es.playing = playingMarks;
+  return es;
+}
+
 function render() {
-  layout = renderScore(scoreEl, editor.score, editor.editorState());
+  layout = renderScore(scoreEl, editor.score, editorStateForRender());
   updateToolbarState();
   updateSidePanel();
   updateStatus();
   scheduleAutosave();
+}
+
+// Lightweight re-render for the moving playhead: only the score SVG, no side
+// panel rebuild and no autosave scheduling (playback must not churn saves).
+function renderScoreOnly() {
+  layout = renderScore(scoreEl, editor.score, editorStateForRender());
+}
+
+// ---- Playback --------------------------------------------------------------
+function updatePlayButton() {
+  const b = $('#btn-play');
+  if (!b) return;
+  b.textContent = playbackActive ? '■ Stop' : '▶ Play';
+  b.classList.toggle('active', playbackActive);
+  b.title = playbackActive
+    ? 'Stop playback (Space)'
+    : 'Play from start  ·  Ctrl/Cmd-click: play from cursor  ·  Space: play/stop';
+}
+
+// Start whole-score playback. `fromCursor` plays from the cursor to the end;
+// otherwise from the beginning. Audio + the moving playhead are driven by the
+// scheduler in audio.js; the highlight is fed in via editorState (never committed).
+function startPlaybackUI(fromCursor) {
+  if (playbackActive) return;
+  const startBeat = fromCursor ? cursorStartBeat(editor.score, editor.cursor) : 0;
+  const plan = buildPlayback(editor.score, startBeat);
+  if (!plan.steps.length) { toast('Nothing to play'); return; }
+  playbackActive = true;
+  playingMarks = null;
+  updatePlayButton();
+  const started = startPlayback(plan, {
+    onStep: (marks) => { playingMarks = marks; renderScoreOnly(); },
+    onEnd: () => { stopPlaybackUI(); },
+  });
+  if (!started) stopPlaybackUI();
+}
+
+// Halt audio + clear playback flags/highlight and refresh the button. No render.
+function resetPlaybackState() {
+  stopPlayback();
+  playbackActive = false;
+  playingMarks = null;
+  updatePlayButton();
+}
+
+// Stop playback and refresh the score so the playhead highlight disappears.
+// Used by the Stop button, Space, the natural end-of-score, and on edit/nav.
+function stopPlaybackUI() {
+  const wasActive = playbackActive || playingMarks !== null;
+  resetPlaybackState();
+  if (wasActive) renderScoreOnly();
 }
 
 function targetUniformAcc() {
@@ -408,6 +474,13 @@ function wireToolbar() {
   $('#btn-help').addEventListener('click', () => $('#help').classList.toggle('hidden'));
   $('#btn-projects').addEventListener('click', () => { show($('#project-modal')); refreshProjectList(); });
   $('#btn-export').addEventListener('click', onExportPDF);
+  // Play from start; Ctrl/Cmd-click plays from the cursor. Clicking while
+  // playing stops. Not an edit — never touches the editor / undo history.
+  $('#btn-play').addEventListener('click', (e) => {
+    if (playbackActive) stopPlaybackUI();
+    else startPlaybackUI(e.ctrlKey || e.metaKey);
+    scoreEl.focus();
+  });
 }
 
 async function onExportPDF() {
@@ -439,6 +512,13 @@ function wireSidePanel() {
   $('#btn-add-staff').addEventListener('click', () => editor.addStaff($('#add-instr').value));
   $('#btn-add-measure').addEventListener('click', () => editor.addMeasure());
   $('#btn-del-measure').addEventListener('click', () => editor.removeMeasure());
+  $('#btn-del-current').addEventListener('click', () => {
+    if (editor.score.staves[0].measures.length <= 1) { toast('At least one measure is required.'); return; }
+    const bar = editor.cursor.measureIndex + 1;
+    editor.removeMeasureAt(editor.cursor.measureIndex);
+    toast(`Removed bar ${bar}`);
+    scoreEl.focus();
+  });
 
   // Append N measures at once (Enter in the field or click the button).
   const addN = () => {
@@ -497,6 +577,14 @@ function wireKeyboard() {
     if (inField) return;
 
     const k = e.key;
+    // Space toggles whole-score playback (from the start). Playback is not an
+    // edit, so it never goes through the editor / undo history.
+    if (k === ' ' || k === 'Spacebar') {
+      e.preventDefault();
+      if (playbackActive) stopPlaybackUI();
+      else startPlaybackUI(false);
+      return;
+    }
     if (/^[a-gA-G]$/.test(k)) {
       e.preventDefault();
       resumeAudio();
@@ -511,8 +599,8 @@ function wireKeyboard() {
     if (k === 't' || k === 'T') { e.preventDefault(); editor.toggleTie(); return; }
     if (k === 'ArrowUp') { e.preventDefault(); editor.nudgePitch(ctrl ? 7 : 1); return; }
     if (k === 'ArrowDown') { e.preventDefault(); editor.nudgePitch(ctrl ? -7 : -1); return; }
-    if (k === 'ArrowLeft') { e.preventDefault(); editor.moveLeft(); return; }
-    if (k === 'ArrowRight') { e.preventDefault(); editor.moveRight(); return; }
+    if (k === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? editor.moveMeasureLeft() : editor.moveLeft(); return; }
+    if (k === 'ArrowRight') { e.preventDefault(); e.shiftKey ? editor.moveMeasureRight() : editor.moveRight(); return; }
     if (k === 'Tab') { e.preventDefault(); editor.nextStaff(e.shiftKey ? -1 : 1); return; }
     if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); editor.deleteTarget(); return; }
     if (k === ']') { e.preventDefault(); editor.setAccidental('#'); return; }
@@ -602,6 +690,10 @@ async function init() {
   window.MusicApp = {
     get editor() { return editor; },
     get layout() { return layout; },
+    get isPlaying() { return playbackActive; },
+    get playing() { return playingMarks; },
+    play(fromCursor = false) { startPlaybackUI(!!fromCursor); },
+    stop() { stopPlaybackUI(); },
     render,
     async exportDataUri() { const { pdf } = await buildPDF(editor.score); return pdf.output('datauristring'); },
   };
