@@ -14,7 +14,7 @@
 const MN = (window.MN = window.MN || {});
 const {
   effectiveTimeSignature, effectiveKeySignature, sortPitches, pitchToVexKey,
-  topLineDiatonic, diatonicToPitch,
+  topLineDiatonic, diatonicToPitch, durationBeats, measureCapacityBeats,
 } = MN.model;
 
 const VF = () => window.Vex.Flow;
@@ -27,7 +27,8 @@ const TITLE_BLOCK_H = 78;     // reserved at the top of page 1 for title/compose
 const STAFF_SLOT = 104;       // vertical space allotted to one staff (room for dynamics/lyrics)
 const SYSTEM_GAP = 42;        // gap between systems
 const STAFF_TOP_PAD = 22;     // space above a staff's top line (for ledger/measure #)
-const MIN_MEASURE_W = 132;    // drives how many measures fit per system
+const MIN_CONTENT_W = 92;     // floor on a measure's content width (keeps sparse bars readable)
+const NOTE_PAD = 26;          // padding added to a measure's measured min note width
 const FIRST_MEASURE_EXTRA = 52; // extra width given to a system's first measure (clef/key)
 const ACCENT = '#2563eb';
 
@@ -43,31 +44,74 @@ function textWidth(ctx, text, size) {
 
 // ---- Layout ---------------------------------------------------------------
 
-// Decide how measures pack into systems and systems into pages. Returns a plain
-// object describing every page; drawing happens later.
+// Minimum note-area width a measure needs, taken as the widest requirement
+// across all staves (so multi-staff barlines stay aligned). Uses VexFlow's
+// formatter pre-pass; falls back to the floor if VexFlow can't measure.
+function measureContentWidth(score, globalM) {
+  const Flow = VF();
+  const ts = effectiveTimeSignature(score, globalM);
+  let w = 0;
+  for (let s = 0; s < score.staves.length; s++) {
+    const staff = score.staves[s];
+    const built = buildMeasure(staff.measures[globalM], staff.clef, ts, true);
+    const voice = new Flow.Voice({ num_beats: ts.num, beat_value: ts.den }).setMode(Flow.Voice.Mode.SOFT);
+    voice.addTickables(built.staveNotes);
+    let vw;
+    try {
+      const f = new Flow.Formatter();
+      f.joinVoices([voice]);
+      vw = f.preCalculateMinTotalWidth([voice]);
+    } catch (e) { vw = MIN_CONTENT_W; }
+    if (vw > w) w = vw;
+  }
+  return Math.max(MIN_CONTENT_W, w + NOTE_PAD);
+}
+
+// Decide how measures pack into systems and systems into pages. Each measure is
+// sized by its content's minimum width; measures are packed greedily by
+// available width, then each system is justified to fill the page (wider bars
+// get proportionally more space). Returns a plain object describing every page.
 function computeLayout(score) {
   const contentW = PAGE_W - MARGIN.left - MARGIN.right;
   const numStaves = score.staves.length;
   const totalMeasures = score.staves[0] ? score.staves[0].measures.length : 0;
-  const measuresPerSystem = Math.max(1, Math.min(8, Math.floor(contentW / MIN_MEASURE_W)));
   const systemHeight = numStaves * STAFF_SLOT + SYSTEM_GAP;
 
-  // Group measures into systems.
+  // 1) Content-driven minimum width for every measure.
+  const minW = [];
+  for (let m = 0; m < totalMeasures; m++) minW.push(measureContentWidth(score, m));
+
+  // 2) Greedily pack measures into systems. The first measure of each system
+  // reserves extra room for the clef/key signature.
   const rawSystems = [];
-  for (let m = 0; m < totalMeasures; m += measuresPerSystem) {
-    rawSystems.push({ start: m, count: Math.min(measuresPerSystem, totalMeasures - m) });
+  let i = 0;
+  while (i < totalMeasures) {
+    let sum = FIRST_MEASURE_EXTRA;
+    let count = 0;
+    while (i + count < totalMeasures) {
+      const add = minW[i + count];
+      if (count > 0 && sum + add > contentW) break;
+      sum += add;
+      count++;
+    }
+    if (count === 0) count = 1; // a single oversized measure still gets its own system
+    rawSystems.push({ start: i, count });
+    i += count;
   }
   if (rawSystems.length === 0) rawSystems.push({ start: 0, count: 0 });
 
-  // Per-system measure x positions + widths. First measure is widened to make
-  // room for the clef/key signature so note areas stay reasonable.
+  // 3) Justify each system to fill the content width, distributing space in
+  // proportion to each measure's minimum content width.
   rawSystems.forEach((sys) => {
+    if (sys.count === 0) { sys.widths = [contentW]; sys.xs = [MARGIN.left]; return; }
+    const mins = [];
+    for (let j = 0; j < sys.count; j++) mins.push(minW[sys.start + j]);
+    const totalMin = mins.reduce((a, b) => a + b, 0) + FIRST_MEASURE_EXTRA;
+    const scale = contentW / totalMin;
     const widths = [];
-    if (sys.count <= 1) {
-      widths.push(contentW);
-    } else {
-      const base = (contentW - FIRST_MEASURE_EXTRA) / sys.count;
-      for (let j = 0; j < sys.count; j++) widths.push(j === 0 ? base + FIRST_MEASURE_EXTRA : base);
+    for (let j = 0; j < sys.count; j++) {
+      const extra = j === 0 ? FIRST_MEASURE_EXTRA : 0;
+      widths.push((mins[j] + extra) * scale);
     }
     const xs = [];
     let x = MARGIN.left;
@@ -76,7 +120,7 @@ function computeLayout(score) {
     sys.xs = xs;
   });
 
-  // Paginate systems by available vertical space (page 1 reserves a title block).
+  // 4) Paginate systems by available vertical space (page 1 reserves a title block).
   const pages = [];
   let cur = { systems: [] };
   let y = MARGIN.top + TITLE_BLOCK_H;
@@ -92,7 +136,7 @@ function computeLayout(score) {
   });
   pages.push(cur);
 
-  return { pages, numStaves, systemHeight, measuresPerSystem };
+  return { pages, numStaves, systemHeight };
 }
 
 function staffY(systemYTop, staffIndex) {
@@ -110,7 +154,7 @@ function applyDots(staveNote, dots) {
 
 // Build one VexFlow StaveNote from a model note (rest if no pitches). Wrapped so
 // an exotic option (e.g. a custom notehead) can never crash the whole render.
-function buildStaveNote(note, clef) {
+function buildStaveNote(note, clef, measuring) {
   const Flow = VF();
   if (!note.pitches || note.pitches.length === 0) {
     const sn = new Flow.StaveNote({ keys: [REST_KEY[clef] || 'b/4'], duration: note.duration + 'r', clef });
@@ -120,12 +164,16 @@ function buildStaveNote(note, clef) {
   const sorted = sortPitches(note.pitches);
   const useHead = note.notehead && note.notehead !== 'normal' && NOTEHEAD_SUFFIX[note.notehead];
   const keys = sorted.map((p) => pitchToVexKey(p) + (useHead ? '/' + NOTEHEAD_SUFFIX[note.notehead] : ''));
+  // For width measurement we omit auto_stem: VexFlow's preCalculateMinTotalWidth
+  // under-reports widths for auto-stemmed notes, so the plain form yields a safe
+  // (slightly conservative) minimum for the layout pass.
+  const opts = measuring ? {} : { auto_stem: true };
   let sn;
   try {
-    sn = new Flow.StaveNote({ keys, duration: note.duration, clef, auto_stem: true });
+    sn = new Flow.StaveNote({ keys, duration: note.duration, clef, ...opts });
   } catch (e) {
     // Fall back to plain noteheads if a custom head code was rejected.
-    sn = new Flow.StaveNote({ keys: sorted.map(pitchToVexKey), duration: note.duration, clef, auto_stem: true });
+    sn = new Flow.StaveNote({ keys: sorted.map(pitchToVexKey), duration: note.duration, clef, ...opts });
   }
   sorted.forEach((p, i) => {
     if (p.acc && p.acc !== '') {
@@ -136,15 +184,68 @@ function buildStaveNote(note, clef) {
   return sn;
 }
 
-// Build the StaveNotes for a measure. Empty measures render as a whole rest.
-function buildMeasure(measure, clef) {
-  if (!measure.notes || measure.notes.length === 0) {
-    const Flow = VF();
-    const rest = new Flow.StaveNote({ keys: [REST_KEY[clef] || 'b/4'], duration: 'wr', clef });
-    return { staveNotes: [rest], modelNotes: [null], isEmpty: true };
+// Candidate rest values (largest first) for filling a partial measure, in units
+// of a 32nd note (1 quarter-note beat = 8 units).
+const FILL_CANDIDATES = [
+  { duration: 'w',  dots: 0, u: 32 },
+  { duration: 'h',  dots: 1, u: 24 },
+  { duration: 'h',  dots: 0, u: 16 },
+  { duration: 'q',  dots: 1, u: 12 },
+  { duration: 'q',  dots: 0, u: 8 },
+  { duration: '8',  dots: 1, u: 6 },
+  { duration: '8',  dots: 0, u: 4 },
+  { duration: '16', dots: 1, u: 3 },
+  { duration: '16', dots: 0, u: 2 },
+  { duration: '32', dots: 0, u: 1 },
+];
+
+// Break a remaining duration (in quarter-note beats, beginning at `startBeat`)
+// into display rests, greedily largest-first but not crossing a quarter-note
+// boundary unless already aligned to one. Pure; display-only.
+function fillerRests(remainingBeats, startBeat) {
+  const U = 8;
+  let pos = Math.round(startBeat * U);
+  let rem = Math.round(remainingBeats * U);
+  const out = [];
+  let guard = 0;
+  while (rem > 0 && guard++ < 256) {
+    const toBeat = (U - (pos % U)) % U; // units until the next quarter boundary (0 if on one)
+    const cand = FILL_CANDIDATES.find((c) => c.u <= rem && (toBeat === 0 || c.u <= toBeat));
+    if (!cand) break;
+    out.push({ duration: cand.duration, dots: cand.dots });
+    pos += cand.u;
+    rem -= cand.u;
   }
-  const staveNotes = measure.notes.map((n) => buildStaveNote(n, clef));
-  return { staveNotes, modelNotes: measure.notes, isEmpty: false };
+  return out;
+}
+
+// Build the StaveNotes for a measure. Empty measures render as a single whole
+// rest. Partially filled measures get DISPLAY-ONLY trailing rests appended after
+// the real notes (never stored in the model). `realCount` tells callers how many
+// leading staveNotes correspond to real model notes.
+function buildMeasure(measure, clef, ts, measuring) {
+  const Flow = VF();
+  if (!measure.notes || measure.notes.length === 0) {
+    const rest = new Flow.StaveNote({ keys: [REST_KEY[clef] || 'b/4'], duration: 'wr', clef });
+    return { staveNotes: [rest], modelNotes: [null], isEmpty: true, realCount: 0 };
+  }
+  const staveNotes = measure.notes.map((n) => buildStaveNote(n, clef, measuring));
+  const modelNotes = measure.notes.slice();
+  const realCount = measure.notes.length;
+
+  if (ts) {
+    const used = measure.notes.reduce((s, n) => s + durationBeats(n.duration, n.dots), 0);
+    const remaining = measureCapacityBeats(ts) - used;
+    if (remaining > 1e-6) {
+      fillerRests(remaining, used).forEach((fr) => {
+        const sn = new Flow.StaveNote({ keys: [REST_KEY[clef] || 'b/4'], duration: fr.duration + 'r', clef });
+        applyDots(sn, fr.dots);
+        staveNotes.push(sn);
+        modelNotes.push(null);
+      });
+    }
+  }
+  return { staveNotes, modelNotes, isEmpty: false, realCount };
 }
 
 function beamGroupsForTime(ts) {
@@ -287,7 +388,7 @@ function drawSystem(ctx, score, system, pageIndex, isFirstSystemOfPiece, layout,
     for (let s = 0; s < numStaves; s++) {
       const cell = staves2d[s][col];
       const measure = score.staves[s].measures[globalM];
-      const b = buildMeasure(measure, cell.clef);
+      const b = buildMeasure(measure, cell.clef, ts);
       const voice = new Flow.Voice({ num_beats: ts.num, beat_value: ts.den }).setMode(Flow.Voice.Mode.SOFT);
       voice.addTickables(b.staveNotes);
 
@@ -303,14 +404,24 @@ function drawSystem(ctx, score, system, pageIndex, isFirstSystemOfPiece, layout,
     }
 
     // Format all of this column's voices together against the most-constrained
-    // stave so notes align vertically and clear the clef/key area.
-    let ref = staves2d[0][col].stave;
-    let refStart = -Infinity;
-    for (let s = 0; s < numStaves; s++) {
-      const st = staves2d[s][col].stave.getNoteStartX();
-      if (st > refStart) { refStart = st; ref = staves2d[s][col].stave; }
+    // stave so notes align vertically and clear the clef/key area. When every
+    // staff's measure is empty (a lone centered whole rest), VexFlow's formatter
+    // drops all but one rest if they share a tick context, so format those
+    // independently — there is nothing to align anyway.
+    const allEmpty = built.every((x) => x.b.isEmpty);
+    if (allEmpty) {
+      for (let s = 0; s < numStaves; s++) {
+        new Flow.Formatter().joinVoices([voices[s]]).formatToStave([voices[s]], staves2d[s][col].stave);
+      }
+    } else {
+      let ref = staves2d[0][col].stave;
+      let refStart = -Infinity;
+      for (let s = 0; s < numStaves; s++) {
+        const st = staves2d[s][col].stave.getNoteStartX();
+        if (st > refStart) { refStart = st; ref = staves2d[s][col].stave; }
+      }
+      new Flow.Formatter().joinVoices(voices).formatToStave(voices, ref);
     }
-    new Flow.Formatter().joinVoices(voices).formatToStave(voices, ref);
 
     // Draw voices + beams, capture geometry, draw dynamics.
     for (let s = 0; s < numStaves; s++) {
@@ -329,7 +440,11 @@ function drawSystem(ctx, score, system, pageIndex, isFirstSystemOfPiece, layout,
       const lineSpacing = cell.stave.getSpacingBetweenLines();
       const slots = [];
       if (!b.isEmpty) {
-        b.staveNotes.forEach((sn, idx) => slots.push({ noteIndex: idx, x: sn.getAbsoluteX() }));
+        // Only real (model) notes get slots; trailing display rests are skipped
+        // so the cursor and click-to-place stay anchored to real content.
+        b.staveNotes.forEach((sn, idx) => {
+          if (idx < b.realCount) slots.push({ noteIndex: idx, x: sn.getAbsoluteX() });
+        });
       }
       out.staveBoxes.push({
         pageIndex, staffIndex: s, globalMeasureIndex: globalM,

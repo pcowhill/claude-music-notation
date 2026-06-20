@@ -239,6 +239,57 @@ function effectiveKeySignature(staff, measureIndex) {
   return staff.keySignature;
 }
 
+// ---- Key-signature → sounding accidentals (audio only) --------------------
+// The page keeps key signatures display-only (the renderer draws exactly the
+// accidental on each pitch), but audio should sound the real pitch, so these
+// helpers resolve what a written pitch actually sounds like.
+
+// Order in which sharps / flats are added to a key signature.
+const SHARP_ORDER = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+const FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+// Signed count of accidentals for each VexFlow key spec (+sharps / −flats).
+const KEY_ACCIDENTAL_COUNT = {
+  C: 0, G: 1, D: 2, A: 3, E: 4, B: 5, 'F#': 6, 'C#': 7,
+  F: -1, Bb: -2, Eb: -3, Ab: -4, Db: -5, Gb: -6, Cb: -7,
+};
+
+// Map a key spec (e.g. 'D') to the letters it alters, e.g. { F:'#', C:'#' }.
+function keySignatureAccidentals(keySpec) {
+  const map = {};
+  const n = KEY_ACCIDENTAL_COUNT[keySpec] || 0;
+  if (n > 0) for (let i = 0; i < n; i++) map[SHARP_ORDER[i]] = '#';
+  else if (n < 0) for (let i = 0; i < -n; i++) map[FLAT_ORDER[i]] = 'b';
+  return map;
+}
+
+// Resolve the SOUNDING accidental for a written pitch. Precedence:
+//   explicit acc on the note  >  most recent explicit acc on the same
+//   letter+octave earlier in the bar  >  key-signature alteration  >  natural.
+function soundingAccidental(pitch, priorPitches, keyAcc) {
+  if (pitch.acc && pitch.acc !== '') return pitch.acc;
+  for (let i = priorPitches.length - 1; i >= 0; i--) {
+    const p = priorPitches[i];
+    if (p.letter === pitch.letter && p.octave === pitch.octave && p.acc && p.acc !== '') return p.acc;
+  }
+  if (keyAcc[pitch.letter]) return keyAcc[pitch.letter];
+  return 'n';
+}
+
+// Return copies of `pitches` with their accidental replaced by the sounding one
+// (for audio only — does not affect what is drawn). `noteIndex` is the index,
+// within staff.measures[measureIndex], of the note the pitches belong to.
+function soundingPitches(staff, measureIndex, noteIndex, pitches) {
+  const measure = staff.measures[measureIndex];
+  const keyAcc = keySignatureAccidentals(effectiveKeySignature(staff, measureIndex));
+  const prior = [];
+  if (measure) {
+    for (let i = 0; i < noteIndex && i < measure.notes.length; i++) {
+      for (const p of measure.notes[i].pitches) prior.push(p);
+    }
+  }
+  return pitches.map((p) => ({ ...p, acc: soundingAccidental(p, prior, keyAcc) }));
+}
+
 // ---- Duration helpers -----------------------------------------------------
 
 function durationBeats(duration, dots = 0) {
@@ -349,6 +400,7 @@ MN.model = {
   uid, createNote, createRest, createMeasure, createStaff, createScore,
   cloneScore, serialize, deserialize,
   effectiveTimeSignature, effectiveKeySignature,
+  keySignatureAccidentals, soundingAccidental, soundingPitches,
   durationBeats, measureCapacityBeats,
   pitchToDiatonic, diatonicToPitch, pitchToMidi, pitchToFrequency, transposeDiatonic,
   pitchToVexKey, pitchToLabel, topLineDiatonic, defaultPitchForClef,
