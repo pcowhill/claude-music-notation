@@ -30,7 +30,8 @@ const STAFF_TOP_PAD = 22;     // space above a staff's top line (for ledger/meas
 const MIN_CONTENT_W = 92;     // floor on a measure's content width (keeps sparse bars readable)
 const NOTE_PAD = 26;          // padding added to a measure's measured min note width
 const FIRST_MEASURE_EXTRA = 52; // extra width given to a system's first measure (clef/key)
-const ACCENT = '#2563eb';
+const ACCENT = '#2563eb';      // edit cursor / selected (target) note
+const PLAY_ACCENT = '#16a34a'; // moving playback playhead (distinct from ACCENT)
 
 // Center / right-aligned line of text. Falls back to an estimate if the SVG
 // context can't measure (keeps PDF export robust).
@@ -330,6 +331,10 @@ function drawSystem(ctx, score, system, pageIndex, isFirstSystemOfPiece, layout,
   const Flow = VF();
   const numStaves = score.staves.length;
   const totalMeasures = score.staves[0].measures.length;
+  // Notes currently sounding (the moving playhead), keyed staff:measure:note.
+  const playing = editorState.playing && editorState.playing.length
+    ? new Set(editorState.playing.map((p) => p.staffIndex + ':' + p.measureIndex + ':' + p.noteIndex))
+    : null;
   // staves2d[staffIndex][col] -> { stave, globalM, clef }
   const staves2d = [];
 
@@ -397,6 +402,16 @@ function drawSystem(ctx, score, system, pageIndex, isFirstSystemOfPiece, layout,
           && editorState.target.measureIndex === globalM && !b.isEmpty) {
         const tn = b.staveNotes[editorState.target.noteIndex];
         if (tn) tn.setStyle({ fillStyle: ACCENT, strokeStyle: ACCENT });
+      }
+
+      // Playback playhead: colour the currently-sounding note(s) distinctly
+      // (drawn after the target so a note that is both shows as "playing").
+      if (playing && !b.isEmpty) {
+        for (let i = 0; i < b.realCount; i++) {
+          if (playing.has(s + ':' + globalM + ':' + i) && b.staveNotes[i]) {
+            b.staveNotes[i].setStyle({ fillStyle: PLAY_ACCENT, strokeStyle: PLAY_ACCENT });
+          }
+        }
       }
 
       built.push({ b, cell, staffIndex: s });

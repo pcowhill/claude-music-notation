@@ -1,7 +1,8 @@
 // audio.js
-// A tiny Web Audio synth that plays a short "ping" when the user enters a pitch
-// or chord, so they can hear what they placed. No external audio library — just
-// an oscillator + gain envelope per voice. No full-score playback.
+// A tiny Web Audio synth. It plays a short "ping" when the user enters a pitch
+// or chord (so they can hear what they placed) AND schedules whole-score
+// playback from a plan built by MN.model.buildPlayback. No external audio
+// library — just an oscillator + gain envelope per voice.
 
 (function () {
 'use strict';
@@ -69,5 +70,101 @@ function playChord(pitches) {
   pitches.forEach((p) => pingFrequency(pitchToFrequency(p), now, master));
 }
 
-MN.audio = { resumeAudio, playPitch, playChord };
+// ---- Whole-score playback -------------------------------------------------
+// Schedules an entire plan (from MN.model.buildPlayback) on the Web Audio clock
+// and drives a visual playhead via requestAnimationFrame against that same
+// clock, so the highlight tracks the sound. Only one player runs at a time.
+
+let player = null; // { teardown() } while playing, else null
+
+// One sustained tone: short attack, hold, gentle release. Longer than the entry
+// "ping" so held notes ring for (about) their full written duration.
+function scheduleTone(freq, when, durSec, dest) {
+  const c = ctx;
+  const osc = c.createOscillator();
+  const gain = c.createGain();
+  osc.type = 'triangle';
+  osc.frequency.value = freq;
+  const dur = Math.max(durSec, 0.08);
+  const end = when + dur;
+  const rel = Math.min(0.12, dur * 0.3);
+  const peak = 0.16;
+  gain.gain.setValueAtTime(0.0001, when);
+  gain.gain.exponentialRampToValueAtTime(peak, when + 0.008);
+  gain.gain.setValueAtTime(peak, Math.max(when + 0.012, end - rel));
+  gain.gain.exponentialRampToValueAtTime(0.0001, end);
+  osc.connect(gain);
+  gain.connect(dest);
+  osc.start(when);
+  osc.stop(end + 0.03);
+  return { osc, gain };
+}
+
+function isPlaying() { return !!player; }
+
+// Begin playing `plan`. onStep(marks) fires at each playhead moment; onEnd()
+// fires exactly once when playback finishes on its own (not on stopPlayback).
+// Returns true if playback started.
+function startPlayback(plan, { onStep, onEnd } = {}) {
+  const c = getContext();
+  if (!c) { if (onEnd) onEnd(); return false; }
+  resumeAudio();
+  stopPlayback(); // never run two players at once
+  const startAt = c.currentTime + 0.08; // small lead so the first onset isn't clipped
+  const master = c.createGain();
+  master.gain.value = 0.8;
+  master.connect(c.destination);
+  const nodes = [];
+  plan.audioNotes.forEach((n) => {
+    n.freqs.forEach((f) => nodes.push(scheduleTone(f, startAt + n.atSec, n.durSec, master)));
+  });
+
+  const steps = plan.steps || [];
+  let si = 0;
+  let rafId = 0;
+  let done = false;
+
+  function teardown() {
+    if (done) return;
+    done = true;
+    cancelAnimationFrame(rafId);
+    nodes.forEach(({ osc, gain }) => {
+      try { osc.stop(); } catch (e) { /* may not have started yet */ }
+      try { osc.disconnect(); } catch (e) { /* ignore */ }
+      try { gain.disconnect(); } catch (e) { /* ignore */ }
+    });
+    try { master.disconnect(); } catch (e) { /* ignore */ }
+  }
+
+  function tick() {
+    if (done) return;
+    const elapsed = c.currentTime - startAt;
+    while (si < steps.length && steps[si].atSec <= elapsed + 0.012) {
+      if (onStep) onStep(steps[si].marks);
+      si++;
+    }
+    if (elapsed >= plan.endSec) {
+      player = null;
+      teardown();
+      if (onEnd) onEnd();
+      return;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  player = { teardown };
+  rafId = requestAnimationFrame(tick);
+  return true;
+}
+
+// Stop the current player immediately (cuts sound; fires no onEnd). Safe when
+// already idle.
+function stopPlayback() {
+  if (!player) return;
+  const p = player;
+  player = null;
+  p.teardown();
+}
+
+MN.audio = { resumeAudio, playPitch, playChord, startPlayback, stopPlayback, isPlaying };
 })();

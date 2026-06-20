@@ -398,22 +398,41 @@ class Editor {
   }
 
   // ---- Cursor navigation --------------------------------------------------
+  // Shared tail for pure navigation: mirror the new target into the palette and
+  // last-pitch, then notify. Navigation is NOT an edit (no commit/undo step).
+  _afterNav() {
+    this._syncLastPitch();
+    this._syncInputFromTarget();
+    this._emit();
+  }
   moveLeft() {
     const c = this.cursor;
     if (c.noteIndex > 0) c.noteIndex--;
     else if (c.measureIndex > 0) { c.measureIndex--; c.noteIndex = this.curMeasure().notes.length; }
-    this._syncLastPitch();
-    this._syncInputFromTarget();
-    this._emit();
+    this._afterNav();
   }
   moveRight() {
     const c = this.cursor;
     const m = this.curMeasure();
     if (c.noteIndex < m.notes.length) c.noteIndex++;
     else if (c.measureIndex < this.curStaff().measures.length - 1) { c.measureIndex++; c.noteIndex = 0; }
-    this._syncLastPitch();
-    this._syncInputFromTarget();
-    this._emit();
+    this._afterNav();
+  }
+  // Jump to the start of the next measure (MuseScore Shift+Right). In the last
+  // measure, snap to that measure's start.
+  moveMeasureRight() {
+    const c = this.cursor;
+    if (c.measureIndex < this.curStaff().measures.length - 1) c.measureIndex++;
+    c.noteIndex = 0;
+    this._afterNav();
+  }
+  // Jump to the start of the current measure; if already there, to the start of
+  // the previous measure (MuseScore Shift+Left).
+  moveMeasureLeft() {
+    const c = this.cursor;
+    if (c.noteIndex > 0) c.noteIndex = 0;
+    else if (c.measureIndex > 0) { c.measureIndex--; c.noteIndex = 0; }
+    this._afterNav();
   }
   nextStaff(dir = 1) {
     const n = this.score.staves.length;
@@ -466,10 +485,23 @@ class Editor {
       for (let i = 0; i < count; i++) this.score.staves.forEach((s) => s.measures.push(createMeasure()));
     });
   }
+  // Remove the LAST measure of the score from every staff.
   removeMeasure() {
     if (!this.score.staves[0] || this.score.staves[0].measures.length <= 1) return;
     this.commit(() => {
       this.score.staves.forEach((s) => s.measures.pop());
+      this._clampCursor();
+    });
+  }
+  // Remove a specific measure (e.g. the cursor's bar) from every staff so all
+  // staves stay equal length. Never drops below one measure; clamps the cursor.
+  removeMeasureAt(index) {
+    const staff0 = this.score.staves[0];
+    if (!staff0 || staff0.measures.length <= 1) return;
+    const idx = Math.max(0, Math.min(index, staff0.measures.length - 1));
+    this.commit(() => {
+      this.score.staves.forEach((s) => { if (idx < s.measures.length) s.measures.splice(idx, 1); });
+      this.score.staves.forEach((s) => { if (s.measures.length === 0) s.measures.push(createMeasure()); });
       this._clampCursor();
     });
   }
