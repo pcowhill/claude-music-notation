@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clef — Sheet Music Editor</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- ===================== Top toolbar ===================== -->
+  <header id="toolbar">
+    <div class="tb-group brand">
+      <span class="logo">𝄞</span><span class="brand-name">Clef</span>
+    </div>
+
+    <div class="tb-group">
+      <button id="btn-projects" class="tb-btn" title="Project manager">Projects</button>
+      <button id="btn-new" class="tb-btn" title="New project">New</button>
+      <button id="btn-save" class="tb-btn" title="Save (Ctrl+S)">Save</button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group">
+      <button id="btn-undo" class="tb-btn icon" title="Undo (Ctrl+Z)">↶</button>
+      <button id="btn-redo" class="tb-btn icon" title="Redo (Ctrl+Y)">↷</button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group" id="dur-group" aria-label="Note duration"></div>
+    <button id="btn-dot" class="tb-btn toggle" title="Dotted (.)">⏺</button>
+    <button id="btn-rest" class="tb-btn toggle" title="Rest (R)">𝄽</button>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group" id="acc-group" aria-label="Accidental"></div>
+    <button id="btn-tie" class="tb-btn toggle" title="Tie to previous (T)">⌣</button>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group" id="dyn-group" aria-label="Dynamics"></div>
+
+    <div class="tb-spacer"></div>
+
+    <div class="tb-group">
+      <button id="btn-export" class="tb-btn" title="Export vector PDF">Export PDF</button>
+      <button id="btn-help" class="tb-btn icon" title="Keyboard help (?)">?</button>
+    </div>
+  </header>
+
+  <!-- ===================== Main area ===================== -->
+  <main id="main">
+    <!-- Side panel: score + staff + measure settings -->
+    <aside id="sidepanel">
+      <section class="panel">
+        <h2>Score</h2>
+        <label>Project name <input id="f-name" type="text" /></label>
+        <label>Title <input id="f-title" type="text" /></label>
+        <label>Composer <input id="f-composer" type="text" /></label>
+        <div class="row">
+          <label class="grow">Tempo <input id="f-tempo" type="number" min="20" max="400" /></label>
+          <label class="grow">Time
+            <span class="time-sig">
+              <select id="f-time-num"></select><span class="slash">/</span><select id="f-time-den"></select>
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Staves</h2>
+          <span class="muted" id="staff-count"></span>
+        </div>
+        <div id="staff-list"></div>
+        <div class="row add-staff">
+          <select id="add-instr"></select>
+          <button id="btn-add-staff" class="btn-sm primary">+ Add staff</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Measures</h2>
+          <span class="muted" id="measure-count"></span>
+        </div>
+        <div class="row">
+          <button id="btn-add-measure" class="btn-sm">+ Add measure</button>
+          <button id="btn-del-measure" class="btn-sm">– Remove measure</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Advanced</h2><span class="muted">Tier 2</span>
+        </div>
+        <label>Notehead (selected note)
+          <select id="f-notehead"></select>
+        </label>
+        <label>Lyric (selected note)
+          <input id="f-lyric" type="text" placeholder="syllable" />
+        </label>
+        <label>Chord symbol (selected note)
+          <input id="f-chordsym" type="text" placeholder="e.g. Cmaj7" />
+        </label>
+        <div class="micro-acc">
+          <span class="muted">Microtonal:</span>
+          <button class="btn-sm" data-microacc="d" title="Quarter-tone flat">d</button>
+          <button class="btn-sm" data-microacc="+" title="Quarter-tone sharp">+</button>
+        </div>
+        <div class="row">
+          <label class="grow">Key change @ here
+            <select id="f-midkey"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">Time change @ here
+            <span class="time-sig">
+              <select id="f-midtime-num"></select><span class="slash">/</span><select id="f-midtime-den"></select>
+            </span>
+          </label>
+          <button id="btn-midtime" class="btn-sm">Apply</button>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Center: the paper / score -->
+    <section id="score-scroll">
+      <div id="score" tabindex="0"></div>
+    </section>
+  </main>
+
+  <!-- ===================== Status bar ===================== -->
+  <footer id="statusbar">
+    <span id="status-pos">—</span>
+    <span id="status-input" class="muted"></span>
+    <span class="grow"></span>
+    <span id="status-save" class="muted">Ready</span>
+  </footer>
+
+  <!-- ===================== Help panel ===================== -->
+  <div id="help" class="overlay hidden">
+    <div class="overlay-card">
+      <div class="overlay-head">
+        <h2>Keyboard shortcuts</h2>
+        <button class="close-x" data-close="help">×</button>
+      </div>
+      <div class="help-grid">
+        <div><kbd>A</kbd>–<kbd>G</kbd></div><div>Enter a note of that letter at the cursor</div>
+        <div><kbd>1</kbd>…<kbd>6</kbd></div><div>Duration: whole, half, quarter, 8th, 16th, 32nd</div>
+        <div><kbd>.</kbd></div><div>Toggle dotted</div>
+        <div><kbd>R</kbd></div><div>Toggle rest input / make selected a rest</div>
+        <div><kbd>↑</kbd> <kbd>↓</kbd></div><div>Move selected note pitch by a step</div>
+        <div><kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd></div><div>Move pitch by an octave</div>
+        <div><kbd>←</kbd> <kbd>→</kbd></div><div>Move the insertion cursor</div>
+        <div><kbd>Tab</kbd></div><div>Next staff</div>
+        <div><kbd>Shift</kbd>+click / <kbd>Shift</kbd>+<kbd>A</kbd>–<kbd>G</kbd></div><div>Add a chord tone to the selected note</div>
+        <div>click staff</div><div>Set pitch / select a note</div>
+        <div><kbd>[</kbd> <kbd>]</kbd> <kbd>\</kbd></div><div>Flat, sharp, natural (selected note)</div>
+        <div><kbd>T</kbd></div><div>Tie to previous</div>
+        <div><kbd>Del</kbd> / <kbd>Backspace</kbd></div><div>Delete selected note/rest</div>
+        <div><kbd>Ctrl</kbd>+<kbd>Z</kbd></div><div>Undo</div>
+        <div><kbd>Ctrl</kbd>+<kbd>Y</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></div><div>Redo</div>
+        <div><kbd>Ctrl</kbd>+<kbd>S</kbd></div><div>Save</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== Project manager ===================== -->
+  <div id="project-modal" class="overlay hidden">
+    <div class="overlay-card wide">
+      <div class="overlay-head">
+        <h2>Projects</h2>
+        <button class="close-x" data-close="project-modal">×</button>
+      </div>
+      <div class="row new-proj">
+        <input id="new-proj-name" type="text" placeholder="New project name" />
+        <button id="btn-create-proj" class="btn-sm primary">Create</button>
+      </div>
+      <div id="project-list" class="project-list"></div>
+    </div>
+  </div>
+
+  <!-- Small toast for transient messages -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- ===================== Libraries (CDN, classic scripts) ===================== -->
+  <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.3/dist/svg2pdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6.2.1/dist/umd.js"></script>
+
+  <!-- App modules (classic scripts in dependency order, so the app runs by
+       opening index.html directly from the file system — no server/build needed). -->
+  <script src="js/instruments.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/pdf.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
